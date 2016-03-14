@@ -2,7 +2,7 @@
 # sudo apt-get install libcurl4-openssl-dev 
 
 install = function(pkg){
-  # Si ya está instalado, no lo instala.
+  # Si ya esta instalado, no lo instala.
   if (!require(pkg, character.only = TRUE)) {
     install.packages(pkg, repos = "http:/cran.rstudio.com")
     if (!require(pkg, character.only = TRUE)) stop(paste("load failure:", pkg))
@@ -42,6 +42,31 @@ get_data = function(api_url){
 }
 
 # To Complete
-parse_data = function(json){
+parse_data = function(origen_list, destny_list, api_key, mode = "driving", language = "es"){
+  #Separar la lista en pedazos para que puedan ser procesada por el API de Google
+  origen_list2<-origen_list[1:40]
+  origen_list3<-origen_list[41:80]
+  origen_list4<-origen_list[81:120]
+  origen_list5<-origen_list[121:160]
   
+  # Colocar su API Key 
+  api_key = "AIzaSyCS6AqTNIPGnPzIMGpyfianRvq5X1bwu9s"
+  api_url = get_url(origen_list2, destny_list, api_key)
+  datos = get_data(api_url)
+  datos2 <- unlist(datos$rows)
+  api_url = get_url(origen_list3, destny_list, api_key)
+  datos = get_data(api_url)
+  datos3 <- unlist(datos$rows)
+  api_url = get_url(origen_list4, destny_list, api_key)
+  datos = get_data(api_url)
+  datos4 <- unlist(datos$rows)
+  api_url = get_url(origen_list5, destny_list, api_key)
+  datos = get_data(api_url)
+  datos5 <- unlist(datos$rows)
+  
+  datos <- append(datos2, datos3, after = length(datos2))
+  datos <- append(datos, datos4, after = length(datos))
+  datos <- append(datos, datos5, after = length(datos))
+  datos <- datos[grep("elements.duration.value", names(datos))]
+  return (datos)
 }

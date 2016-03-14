@@ -1,0 +1,530 @@
+---
+title: "Escogiendo Hogar"
+author: "Andrea Tellería"
+date: "March 13, 2016"
+output: word_document
+latex_engine: xelatex
+---
+
+#1. Objetivos:
+
+Dado que un amigo cercano tiene planeado irse a estudiar al extrangero próximamente (a Italia, Roma), se convirtió en una necesidad el buscar un lugar en el que quedarse y llamar hogar mientras duren sus estudios allí. En vista de esto y con ayuda de la plataforma *sturent*, se concentró en encontrar un buen hogar.
+
+Nuestro amigo, al tener poco capital disponible, necesita escoger con ideas claras el lugar que va a ocupar, en base a una lista de lugares disponibles, la cual fue provista por *sturent*, planea conseguirlo. Para ayudarlo a lograr su onjetivo, se tratará de predecir el precio de los apartamentos en base a los apartamentos disponibles y escoger, de esta manera, el mejor entre ellos con ayuda de un modelo de regresión líneal.
+
+
+#2. Solución
+
+##2.1 Instalación de librerías necesarias
+
+Primero que nada es necesario la instalación de ciertos paquetes que fueron usados a lo largo del análisis, para ello se procede a verificar si estos ya han sido instalados de no estarlo, realiza la instalación pertinente.
+
+```{r, echo=TRUE, results='hide'}
+################################################################
+# Instalación de Paquetes necesarios
+################################################################
+
+#Creamos la función que recibe los paquetes
+install = function(pkg){
+  #Si ya esta instalado, no lo instala.
+  if (!require(pkg, character.only = TRUE)) {
+    install.packages(pkg)
+    if (!require(pkg, character.only = TRUE)) stop(paste("load failure:", pkg))
+  }
+}
+install("foreach")
+#Seleccionamos los archivos que queremos instalar
+archive = c("rJava", "shiny", "rmarkdown", "gdata", "jsonlite", "RCurl")
+foreach(i = archive) %do% install(i)
+
+```
+
+##2.2 Cargando la data
+
+Debido a que los datos se encuentran en un documento excel (extensión .xslx), se usó la función que viene con el paquete *gdata*, *read.xls*, se cargó todo dentro de una variable tipo *data frame*, la que posteriormente se preprocesaria con la finalidad de dejar la data limpia y usable.
+
+Dado que se uso el sistema operativo Windows para hacer el análisis, cabe destacar la necesidad de colocar como atributo para perl, la dirección del compilador (Una forma de no hacer esto es agregar perl a la variables del sistema).
+
+```{r, echo=TRUE, eval=TRUE}
+################################################################
+# Lectura de archivos y carga de datos
+################################################################
+
+df = read.xls ("hogares.xlsx", sheet = 1, header = TRUE, 
+               perl = "C:\\Strawberry\\Perl\\bin\\perl.exe")
+```
+
+##2.3 Preprocesamiento
+
+Lo primero que se notó es que la data se encontraba bastante complicada de analizar, con numerosas habitaciones mezcladas en un sólo registro y palabras con caracteres especiales. Por lo cual la necesidad de preprocesar la información se hizo básico.
+
+###2.3.1 Eliminación de columnas
+
+Cuando se comenzó con el análisis lo primero fue dicernir aquellas variables a las que se les daría importancia durante el análisis y aquellas que se decidió dejar de lado. Esta decisión fue en gran medida tomada con la idea del tiempo que conllevaría el preprocesamiento de algunas columnas, al mismo tiempo junto con otros datos que se decidió no aportaban nada al estudio.
+
+```{r, echo=TRUE, eval=TRUE}
+################################################################
+# Preprocesamiento
+################################################################
+
+#Eliminación de columnas que no aportan información
+#o requieren un gran trabajo de preprocesamiento
+colnames(df)[2] <- "Direccion" #Se elimina el acento del nombre
+colnames(df)[5] <- "Descripcion" #Se elimina el acento del nombre
+df$Tipo.de.Inmueble <- NULL
+df$Foto <- NULL
+df$Descripcion <- NULL
+df$Notas <- NULL
+```
+
+###2.3.2 Limpiando la variable *Piso*
+
+Para limpiar los *string*, se usó *gsub*, en el caso de la variable Piso, debido a sus características básicas, se requirió del uso de esta función para conseguir los pisos correctos.
+
+```{r, echo=TRUE, eval=TRUE}
+#Limpiando los datos
+df$Piso <- gsub("[^TRS[:digit:]]", "", df$Piso)
+df$Piso[df$Piso=='ST'] <- 'S'
+df$Piso <- as.factor(df$Piso)
+df <- df[-c(74), ] 
+```
+
+###2.3.3 Índices de replicación
+
+Como se comentó antes, a lo largo de toda la data ocurre que un registro hace referencia a más de una habitación, como éste caso es usual se trató de saber cuales filas era necesario replicar ya que en relaidad eran más de una, para realizar esto se decidió buscar una lista a la que nos referiremos como índice, el cual nos daría el número de repeticiones que sería necesrio hacer.
+
+####2.3.3.1 Índice de precios y habitación
+
+Como ya se dijo, la idea era buscar un índice (lista de números enteros) cuyo número indicaría la cantidad de veces que se estaban separando un mismo registro. Dada la columna de precios es obvio que muchas veces hay varios valores en una misma fila, la idea era separar estos y saber cuántas veces se hizo esto.
+
+Para conseguirlo se optó por crear una función que nos retornaria con la lista directamente. Luego con la función *sapply*, quedaríamos con lo deseado.
+
+Análogo ocurre con la habitación, en éste caso, además, de pasó a realizar una limpieza de tal forma que la información contenida en ambas columnas fuese más fácil de tratar y de utilizar.
+
+```{r, echo=TRUE, eval=TRUE}
+#Indice de habitacion
+indx.hab = function(str){
+  str <- gsub("INTERO APPARTAMENTO", "1", str)
+  str <- gsub("MINI APPARTAMENTO", "1", str)
+  str <- gsub("MONOLOCALE", "1", str)
+  str <- gsub("[^[:digit:]]", "", str)
+  str <- ifelse (as.numeric(str)>9, 1, str)
+  return (str)
+}
+
+#Generando indice de habitación
+hab <- gsub("/", ";", df$Habitaciones.Disponibles)
+hab <- toupper(hab)
+idx_hab <- sapply(hab, indx.hab, USE.NAMES = FALSE)
+idx_hab <- as.numeric(idx_hab)
+
+#Indices del precio, limpieza de precio
+df$Precio.Mensual <- toupper(df$Precio.Mensual)
+df$Precio.Mensual <- gsub("\n", "", df$Precio.Mensual)
+df$Precio.Mensual <- gsub(",", ";", df$Precio.Mensual)
+df$Precio.Mensual <- gsub("¬", ";", df$Precio.Mensual)
+
+#Función para conseguir índice de precio
+rep.reg = function (str){
+  str <- gsub("[^;[:digit:]]", "", str)
+  str <- strsplit(str, ";")
+  str <- unlist(str)
+  str <- str[str!= ""]
+  return (length(str))
+}
+
+#Generando indice con información de la columna de precios
+pre <- df$Precio.Mensual
+idx_price <- sapply(pre, rep.reg, USE.NAMES = FALSE)
+idx_price[5]<- 2
+idx_price[18]<- 2
+```
+
+####2.3.3.2 *Verdaderos* índices
+
+La información anterior nos dice cuántas veces se replica y las replicas que se generaros de dividir la data que se tenía. Ahora, se tiene que saber el total de replicas que el set de datos debe tener así como replicar aquellos registros tanto de habitaciones como de precios que también necesitan replicarse.
+
+Por ejemplo, en el caso del precio, al dividirse en el caso de las habitaciones con diferentes costos, ya se duplicaron algunas filas, sin embargo en el caso de muchas habitaciones con el mismo precio, ésto no ocurrió, hay que tener por ende, en cuenta estos cosos especiales y tartar con ellos para conseguir los resultados esperados. 
+
+Para ello se generó una función la cual nos daría el *verdadero* índice que buscamos dada la resta entre el indce de precios y el del total de habitaciones.
+
+Una vez se tienen las listas (índices) que deseabamos replicamos.
+
+```{r, echo=TRUE, eval=TRUE}
+#Función para hayar el indice de replicación para los precios
+true.idx = function(idx){
+  for (i in seq(1,length(idx))) {
+    if (idx[i]>0) {
+      idx[i] <- idx[i] + 1
+    } else {
+      idx[i] <- 1
+    }
+  }
+  return(idx)
+}
+
+#Indice de replicación para los precios
+idx <- true.idx(idx_hab - idx_price)
+
+#Replicando filas que necesitan ser replicadas
+pre <- rep(pre, idx)
+hab <- rep(hab, idx_hab)
+```
+
+###2.3.4 Limpieza de precios
+
+Una vez se replicó aquello que necesitamos que se replique es hora de limpiar nuestros precios, para hacer esto hay que separar aquellos precios que están en una misma fila para que éstas sean varias, eliminar todos los caractéres a exepción de los números, teniendo como consideración que los precios de los que se hablan a lo largo del estudio son todos euros. 
+
+Una vez tenemos los dígitos que queríamos los guardamos en una variable la cual va a ser nuestros nuevos precios en nuestro *dataframe*, antes de esto sin embargo, necesitaremos un par de variables extra
+
+```{r, echo=TRUE, eval=TRUE}
+#Función para limpiar los precios
+rep.reg2 = function (str){
+  str <- gsub("[^;[:digit:]]", "", str)
+  str <- strsplit(str, ";")
+  str <- unlist(str)
+  str <- str[str!= ""]
+  return (str)
+}
+
+#Limpiando los precios
+clean_price <- sapply(pre, rep.reg2, USE.NAMES = FALSE)
+clean_price <- unlist(clean_price)
+clean_price[8] <- ""
+clean_price[9] <- ""
+clean_price[29] <- ""
+clean_price <- as.numeric(clean_price)
+clean_price[7] <- clean_price[7]+55
+clean_price[6] <- clean_price[6]+55
+clean_price[28] <- clean_price[28]+50
+clean_price[27] <- clean_price[27]+50
+clean_price <- clean_price[!is.na(clean_price)]
+```
+
+
+###2.3.5 Limpieza de habitaciones
+
+Similar a lo ocurrido con los precios, las habitaciones deben ser limpiadas dándoles un formato más lógico. Una vez replicadas las casillas que necesitaban serlo, se pasó a eliminar de las cadenas de caracteres los caractéres especiales que aparecieron en ellos con el fin de dejar sólo el tipo de habitación a la que se refería. Entre los tipos de habitaciones resultantes se tenían:
+
+1. SINGOLA
+1. APPARTAMENTO (el cual contiene MINI APPARTAMENTO y MONOCALE)
+1. DOPIA
+1. POSTO LETTO
+
+Además se agregó en aquellas habitaciones con servicios excluídos el costo de estos. Borrando cualquier registro que se generó debido al número del impuesto.
+
+```{r, echo=TRUE, eval=TRUE}
+#Función para limpiar las habitaciones
+clean.hab = function(str){
+  str <- gsub("\\s", ";", str)
+  str <- gsub("[^;[:upper:]]", "", str)
+  str <- strsplit(str, ";")
+  str <- unlist(str)
+  str <- str[str!= ""]
+  return (str)
+}
+
+#Limpiando las habitaciones
+clean_hab <- sapply(hab, clean.hab, USE.NAMES = FALSE)
+clean_hab <- unlist(clean_hab)
+clean_hab <- clean_hab[clean_hab != "MINI"]
+clean_hab <- clean_hab[clean_hab != "PRIVATO"]
+clean_hab <- clean_hab[clean_hab != "E"]
+clean_hab <- clean_hab[clean_hab != "O"]
+clean_hab <- clean_hab[clean_hab != "LETTO"]
+clean_hab <- clean_hab[clean_hab != "BAGNO"]
+clean_hab <- clean_hab[clean_hab != "CON"]
+clean_hab <- clean_hab[clean_hab != "USO"]
+clean_hab <- clean_hab[clean_hab != "INTERO"]
+clean_hab <- append(clean_hab, "SINGOLA", 131)
+clean_hab <- gsub("POSTO", "POSTO LETTO", clean_hab)
+clean_hab <- gsub("SINGOLE", "SINGOLA", clean_hab)
+clean_hab <- gsub("DOPPIE", "DOPPIA", clean_hab)
+```
+
+###2.3.6 Replicando el *data set*
+
+Como ya se ha discutido repetidamente, varias filas contenian varias habitaciones, como ya se tienen las replicas de habitaciones (en las que se tuvo en cuenta no contar aquellas que venían de la separación de las cadenas, en casos donde las habitaciones eran de diferentes tipos) y el de los precios (análogo al índice de habitación, en este índice no se tomó en cuenta los datos de la duplicación que venía con separar precios diferentes). 
+
+Ahora bien, lo que se desea es el índice de replicación el conjunto de datos entero. En este caso es aquel con todas las habitaciones disponibles, éste con la finalidad de obtener direcciones, pisos, etc; que vienen con el *data set* original.
+
+```{r, echo=TRUE, eval=TRUE}
+#Calculando la cantidad total de habitaciones
+#Indice total
+hab <- df$Habitaciones.Disponibles
+hab <- toupper(hab)
+hab <- gsub("INTERO APPARTAMENTO", "1", hab)
+hab <- gsub("MINI APPARTAMENTO", "1", hab)
+hab <- gsub("MONOLOCALE", "1", hab)
+hab <- gsub("\n1", ";1", hab)
+hab <- gsub("E;O\nUSO", ";1", hab)
+hab <- gsub("USO", ";1", hab)
+
+#Función para obtener el índice con la información de las habitaciones
+indx.tot = function(str){
+  str <- gsub("[^;[:digit:]]", "", str)
+  str <- strsplit(str, ";")
+  str <- unlist(str)
+  str <- str[str!= ""]
+  str <- as.numeric(str)
+  return (sum(str))
+}
+
+#Generando indice para el data set
+idx_tot <- sapply(hab, indx.tot, USE.NAMES = FALSE)
+df <- df[rep(row.names(df), as.numeric(idx_tot)),]
+df$Habitaciones.Disponibles <- clean_hab
+df$Precio.Mensual <- clean_price
+```
+
+###2.3.7 Direcciones
+
+Primero que nada, junto con la ayuda brindada por el grupo docente de la materia, el cuál facilitó de la función mediante las cuales se emitían las distancias (ya fuese en metros o en tiempo) entre direcciones. Se notó un error que tendía a ocurrir a menudo. 
+
+Lo primero es que ciertas direcciones tenían problemas con el **API de *google maps***, en estos casos sólo la dirección sin el distrito, o sólo el distrito sin la específica dirección eran suficiente para resolver el problema, con esto en mente se ideó una función que retornaría la dirección con la que se buscaría luego con ayuda del **API de *google maps***. Cabe destacar que en este punto todas las direcciones arrojan resultadas, aunque no se pudo confirmar si eran las direcciones correctas o no.
+
+```{r, echo=TRUE, eval=TRUE}
+#Buscando la dirección completa
+origen_list <- paste(df$Distrito, df$Direccion)
+origen_list <- gsub("'", "", origen_list)
+origen_list <- gsub("\n/", " ", origen_list)
+origen_list <- gsub("\n", " ", origen_list)
+origen_list <- gsub("  ", " ", origen_list)
+country <- "Italia"
+destny_list <- "Universita di Roma Sapienza"
+origen_list <- paste(origen_list, country)
+
+#Limpiando las direcciones para qe la búsqueda arroje resultados
+clean.dirs = function(dir) {
+  dir <- ifelse(grepl("Pigneto", dir), "Pigneto", dir)
+  dir <- ifelse(grepl("Batteria Nomentana", dir), "Batteria Nomentana", dir)
+  dir <- ifelse(grepl("San Giovanni", dir), "San Giovanni", dir)
+  dir <- ifelse(grepl("Via Endert", dir), "Via Enderta Roma Italia", dir)
+  dir <- ifelse(grepl("Via Tripolitana", dir), "Via Tripolitania", dir)
+  dir <- ifelse(grepl("Via Filippo Marchetti", dir), "Via Filippo Marchetti", dir)
+  dir <- ifelse(grepl("Montesacro Nomentano Via Cimone Italia", dir), "Montesacro Nomentano Italia", dir)
+  dir <- ifelse(grepl("Casilina Tuscolana Piazza Giuseppe Cardinali Italia", dir), "Casilina Tuscolana Italia", dir)
+  dir <- ifelse(grepl("Baldo degli Ubaldi", dir), "Via Baldo degli Ubaldi Italia", dir)
+  dir <- ifelse(grepl("Balduina Via Lattanzio Italia", dir), "Via Lattanzio Italia", dir)
+  dir <- ifelse(grepl("Bravetta Via del Fontanile Arenato Italia", dir), "Via del Fontanile Arenato Italia", dir)
+  dir <- ifelse(grepl("Cipro Via Bragadin Italia", dir), "Via Bragadin Italia", dir)
+  dir <- ifelse(grepl("Cornelia Piazza", dir), "Cornelia Piazza Roma Italia", dir)
+  dir <- ifelse(grepl("Cornelia Largo", dir), "Cornelia Largo Roma Italia", dir)
+  dir <- ifelse(grepl("Via Giovanni Tamassia Italia", dir), "Via Giovanni Tamassia Italia", dir)
+  dir <- ifelse(grepl("Gregorio VII Via Gregorio VII", dir), "Via Gregorio VII Italia", dir)
+  dir <- ifelse(grepl("Via Francesco Pacelli Italia", dir), "Via Francesco Pacelli Italia", dir)
+  dir <- ifelse(grepl("Via Montesanto Italia", dir), "Via Montesanto Italia", dir)
+  dir <- ifelse(grepl("Magliana Via Biagio a Ripoli Italia", dir), "Magliana Italia", dir)
+  dir <- ifelse(grepl("Via Ascanio Fenizi Italia", dir), "Via Ascanio Fenizi Italia", dir)
+  dir <- ifelse(grepl("Via della Villa Lucina Italia", dir), "Via della Villa Lucina Italia", dir)
+  dir <- ifelse(grepl("Via Gabriello Chiabrera Italia", dir), "Via Gabriello Chiabrera Italia", dir)
+  dir <- ifelse(grepl("Via Antonino Pio", dir), "Via Antonino Pio Italia", dir)
+  dir <- ifelse(grepl("Largo Luigi Antonelli Italia", dir), "Largo Luigi Antonelli Italia", dir)
+  dir <- ifelse(grepl("Via Cristoforo Colombo 348 Italia", dir), "Via Cristoforo Colombo 348 Italia", dir)
+  dir <- ifelse(grepl("Via Pellegrino Matteucci Italia", dir), "Via Pellegrino Matteucci Italia", dir)
+  dir <- ifelse(grepl("Via Ettore Rolli Italia", dir), "Via Ettore Rolli Italia", dir)
+  dir <- ifelse(grepl("Largo Enea Bortolotti Italia", dir), "Largo Enea Bortolotti Italia", dir)
+  dir <- ifelse(grepl("Largo Giuseppe Veratti Italia", dir), "Largo Giuseppe Veratti Italia", dir)
+  dir <- ifelse(grepl("Via Antonio Roiti Italia", dir), "Via Antonio Roiti Italia", dir)
+  dir <- ifelse(grepl("Lungotevere degli Inventori Italia", dir), "Lungotevere degli Inventori Italia", dir)
+  dir <- ifelse(grepl("Via Federico Guarducci Italia", dir), "Via Federico Guarducci Italia", dir)
+  dir <- ifelse(grepl("Via Pietro Blaserna Italia", dir), "Via Pietro Blaserna Italia", dir)
+  dir <- ifelse(grepl("Via Antonino Lo Surdo Italia", dir), "Via Antonino Lo Surdo Italia", dir)
+  dir <- ifelse(grepl("Via Eugenio Barsanti Italia", dir), "Via Eugenio Barsanti Italia", dir)
+  dir <- ifelse(grepl("Lungotevere Dante Italia", dir), "Lungotevere Dante Italia", dir)
+  dir <- ifelse(grepl("Via Francesco Maurolico Italia", dir), "Via Francesco Maurolico Italia", dir)
+  dir <- ifelse(grepl("Via Giuseppe Veronesi Italia", dir), "Via Giuseppe Veronesi Italia", dir)
+  dir <- ifelse(grepl("Via Luigi Biolchini Italia", dir), "Via Luigi Biolchini Italia", dir)
+  dir <- ifelse(grepl("Via Bernardino Molinari Italia", dir), "Via Bernardino Molinari Italia", dir)
+}
+
+#Limpiando las direcciones
+origen_list<-sapply(origen_list, clean.dirs)
+```
+
+###2.3.8 *Google Maps*
+
+```{r, eval=TRUE, results='hide', echo=FALSE}
+install = function(pkg){
+  # Si ya esta instalado, no lo instala.
+  if (!require(pkg, character.only = TRUE)) {
+    install.packages(pkg, repos = "http:/cran.rstudio.com")
+    if (!require(pkg, character.only = TRUE)) stop(paste("load failure:", pkg))
+  }
+}
+
+install("jsonlite")
+
+fetch_data = function(preamble, list){
+  data = preamble
+  for(elem in list){
+    data = paste0(data, paste0(strsplit(elem, " ")[[1]], collapse = "+"), "|", collapse = "") 
+  }
+  return(substr(data, 0, nchar(data)-1))
+}
+
+get_url = function(origins, destinations, key, mode = "driving", language = "es"){
+  # install(pkg)
+  # url base for distance matrix api
+  base = "https://maps.googleapis.com/maps/api/distancematrix/json?"
+  
+  # This could change, using only some atributes from API
+  origin = fetch_data("origins=", origins)
+  destination = fetch_data("destinations=", destinations)
+  key = fetch_data("key=", key)
+  mode = fetch_data("mode=", mode)
+  language = fetch_data("language=", language)
+  
+  # Getting final format for Google API
+  api_url = paste(c(base, paste0(c(origin, destination, key, mode, language), collapse = "&")), collapse = "")
+  
+  return(api_url)
+}
+
+get_data = function(api_url){
+  return(fromJSON(api_url))
+}
+
+#Recibiendo una lista de direcciones con su destino, retorna la distancia en metros
+parse_data = function(origen_list, destny_list, api_key, mode = "driving", language = "es"){
+  #Separar la lista en pedazos para que puedan ser procesada por el API de Google
+  origen_list2<-origen_list[1:40]
+  origen_list3<-origen_list[41:80]
+  origen_list4<-origen_list[81:120]
+  origen_list5<-origen_list[121:160]
+  
+  # Colocar su API Key 
+  api_key = "AIzaSyA5e9bq0_Nmyix8ytYbMyOEbsOhVdY83Bc"
+  api_url = get_url(origen_list2, destny_list, api_key)
+  datos = get_data(api_url)
+  datos2 <- unlist(datos$rows)
+  api_url = get_url(origen_list3, destny_list, api_key)
+  datos = get_data(api_url)
+  datos3 <- unlist(datos$rows)
+  api_url = get_url(origen_list4, destny_list, api_key)
+  datos = get_data(api_url)
+  datos4 <- unlist(datos$rows)
+  api_url = get_url(origen_list5, destny_list, api_key)
+  datos = get_data(api_url)
+  datos5 <- unlist(datos$rows)
+  
+  #combinando los resultados parciales
+  datos <- append(datos2, datos3, after = length(datos2))
+  datos <- append(datos, datos4, after = length(datos))
+  datos <- append(datos, datos5, after = length(datos))
+  datos <- datos[grep("elements.duration.value", names(datos))]
+  return (datos)
+}
+```
+
+Una vez tuvo las direcciones deseadas (así como el destino), se definió el *Key* del **API**, con la que fue posible establecer el contacto con *google maps*, una vez se tuvieron estos elementos, se llamó a la función *parse_data*, la cual fue completada a la hora del estudio y no fue provista originalmente por el grupo de estudio. A esta función se le envió la lista de direcciones de oriden, el destino y el **API *Key***.
+
+```{r, echo=TRUE, eval=TRUE}
+
+# Seleccionar google_api.R en su sistema de archivos, api key y llamar a la función
+# source(file.choose())
+api_key = "AIzaSyCS6AqTNIPGnPzIMGpyfianRvq5X1bwu9s"
+datos <- parse_data(origen_list, destny_list, api_key)
+df$Distancia <- datos
+```
+
+###2.3.9 parse_data
+
+La función parse_data fue dada con la intención de ser completada al momento del estudio, con esta función se buscaron las distancias dadas las direcciones de origen y destino. Debido a complicaciones a la hora de usar el API de google, se decidió separar la lista de origen inicial, de tal forma que no hubiese problemas. 
+
+Cada lista parcial llama a la función que ofrece los servicios del API de google y luego todasse mezclan de nuevo a forma de tener las distancias deseadas. La función retorna justo esta lista de distacias resultante.
+
+```{r, echo=TRUE, eval=FALSE}
+#Recibiendo una lista de direcciones con su destino, retorna la distancia en metros
+parse_data = function(origen_list, destny_list, api_key, mode = "driving", language = "es"){
+  #Separar la lista en pedazos para que puedan ser procesada por el API de Google
+  origen_list2<-origen_list[1:40]
+  origen_list3<-origen_list[41:80]
+  origen_list4<-origen_list[81:120]
+  origen_list5<-origen_list[121:160]
+  
+  # Colocar su API Key 
+  api_key = "AIzaSyA5e9bq0_Nmyix8ytYbMyOEbsOhVdY83Bc"
+  api_url = get_url(origen_list2, destny_list, api_key)
+  datos = get_data(api_url)
+  datos2 <- unlist(datos$rows)
+  api_url = get_url(origen_list3, destny_list, api_key)
+  datos = get_data(api_url)
+  datos3 <- unlist(datos$rows)
+  api_url = get_url(origen_list4, destny_list, api_key)
+  datos = get_data(api_url)
+  datos4 <- unlist(datos$rows)
+  api_url = get_url(origen_list5, destny_list, api_key)
+  datos = get_data(api_url)
+  datos5 <- unlist(datos$rows)
+  
+  #combinando los resultados parciales
+  datos <- append(datos2, datos3, after = length(datos2))
+  datos <- append(datos, datos4, after = length(datos))
+  datos <- append(datos, datos5, after = length(datos))
+  datos <- datos[grep("elements.duration.value", names(datos))]
+  return (datos)
+}
+```
+
+##2.4 Regresión líneal
+
+Una vz tenemos la data deseada en un *data frame*, pasamos al verdadero estudio dónde con ayuda de una regresión líneal se busca conseguir el mejor apartamento (siempre con la idea del costo del mismo en mente) para nuestro amigo, quien planea irse a estudiar fuera.
+
+Para conseguir el modelo usando regresión líneal se usó de la función *lm*, provista por R dentro del paquete básico (*stats*).
+
+Como se tenía en cuenta que lo importante era el dinero se decidió hacer varios modelos (uno por cada variable), donde se trabajaría con el precio en contra de la característica que el resto d las variables tuviesen para ofrecer.
+
+Así pues se consiguieron diversos modelos.
+
+```{r, echo=TRUE, eval=TRUE}
+
+################################################################
+# Regresión Lineal
+################################################################
+
+#Modelo con Precio Vs. Distancia (distancia en metros)
+df$Distancia <- as.numeric(df$Distancia)
+lr <- lm(df$Precio.Mensual ~ df$Distancia, na.action = NULL)
+plot(df$Precio.Mensual ~ df$Distancia, df)
+abline(lr, col="red")
+
+#Modelo con Precio Vs. Distrito
+lr <- lm(df$Precio.Mensual ~ df$Distrito, na.action = NULL)
+plot(df$Precio.Mensual ~ df$Distrito, df)
+abline(lr, col="red")
+
+#Modelo con Precio Vs. Dirección
+lr <- lm(df$Precio.Mensual ~ df$Direccion, na.action = NULL)
+plot(df$Precio.Mensual ~ df$Direccion, df)
+abline(lr, col="red")
+
+#Modelo con Precio Vs. Piso
+lr <- lm(df$Precio.Mensual ~ df$Piso, na.action = NULL)
+plot(df$Precio.Mensual ~ df$Piso, df)
+abline(lr, col="red")
+
+#Modelo con Precio Vs. Habitación
+df$Habitaciones.Disponibles <- as.factor(df$Habitaciones.Disponibles)
+lr <- lm(df$Precio.Mensual ~ df$Habitaciones.Disponibles, na.action = NULL)
+plot(df$Precio.Mensual ~ df$Habitaciones.Disponibles, df)
+abline(lr, col="red")
+
+#Modelo con todas las varibles que forman parte de la vista generada
+lr_all <- lm(df$Precio.Mensual ~ ., df, na.action = NULL)
+plot(lr_all)
+summary(lr_all)
+```
+
+Si se nota, el último modelofue realizado con respecto a todas las varibles al mismo tiempo. Además de emitir gráficas que hablan como el modelo como tal se hizo un resumen del modelo con ayuda de la función *summary*.
+
+Si vemos en nuestros diversas gráficas cuando se habla de costo, este generalmente viene anclado a ciertas características, por ejemplo el tipo de inmuegle del que se habla (apartamento, cama, doble, individual), sin embargo siempre hay algunos valores que vale la pena revisar de cerca. 
+
+Similar ocurre con la distancia, aunque en este caso es llamativo como hay algunos que ofrecen muy poca de ésta (distancia) a un precio bastante atractivo. Como en el caso anterior, valdría la pena estudiar a estos individuos. 
+
+Si bien no sé sabe cuál dirección es más atractiva que otra el gráfico siguiente nos ofrece una clara imagen de cuales tienden a ser más costosos. Similar ocurre al distrito.
+
+Cabe destacar que como varias de las variables con las que se compara al método son factores, sus gráficas nos ofrecen información clara acerca de la media y lo mucho que tienden a variar los precios dependiendo de ciertas características. Esto es obvio en la gráfica de Precio Vs. Piso, dónde como puede verse las terrazas tienden a variar ampliamente, donde hay unas con muy altos costos y otras con bajos. En el caso de algunas otras variables no hay tanta variación en la información.
+
+Las gráficas finales, que viene del modelo contra todas las variables nos ofrecen información interesante sobre los residuales que quedaron de realizar el modelo.
+
